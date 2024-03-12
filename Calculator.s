@@ -4,6 +4,7 @@
 .equ HEX_ADDR, 0xFF200020
 .equ SW_ADDR, 0xFF200040
 .equ LED_ADDR, 0xFF200000
+.equ PUSHB_ADDR, 0xFF200050
 
 // Map holds 7 segment decoded values for 0 to 9
 SEV_SEG_DEC_MAP: .word 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x67
@@ -25,8 +26,28 @@ SEV_SEG_DEC_MAP: .word 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6
 // If r > 99999 / 0x0001869F or r < -99999 / 0xFFFE7961, the HEX displays should output OVRFLO until the clear operation is performed
 
 _start:
-	MOV V1, #0 // Instantiate r
+	MOV A1, #0x3f // Indices for HEX0-HEX5
+	BL HEX_clear_ASM // Clear all HEX displays
 	
+	MOV V1, #0 // Instantiate result to be displayed r
+	
+	MOV A1, #0x1f // Indices for HEX0-HEX4
+	LDR A3, =SEV_SEG_DEC_MAP // Load base address of 7-segment values
+	MOV A4, #0 // We want to display 0 to the HEX displays
+	LDR A2, [A3, A4, LSL #1] // Fetch 7-segment value for 0
+	BL HEX_write_ASM // Display zeroes
+
+poll_buttons:
+	// Whatever is released first is executed first
+
+poll_switches:
+	BL read_slider_switches_ASM // Check which sliders are on
+	BL write_LEDs_ASM // Write to corresponding LEDs
+	B poll // Keep on polling
+
+
+
+
 
 // === DRIVERS ===
 
@@ -66,14 +87,21 @@ HEX_flood_ASM:
 	POP {LR} // Restore link register
 	BX LR // Branch back to _start
 	
-// This subroutine receives HEX display indices and an integer 
-// value, 0-9, to display. These are passed in registers A1 
-// and A2, respectively. Based on the second argument (A2), the 
-// subroutine will display the corresponding hexadecimal digit 
-// (0, 1, 2, 3, 4, 5, 6, 7, 8, 9) on the display(s).
+HEX_display_neg:
+	MOV A1, #0x20 // Index of left-most HEX display
+	MOV A2, #0x40 // 7-segment value for dash
+	PUSH {LR}
+	BL HEX_write_ASM // Write dash to the left-most HEX display
+	POP {LR}
+	BX LR
+
+// Input -> A1, A2
+// A1: HEX display indices (0x0 - 0x1f)
+// A2: Value to display to HEX displays (0-9)
+// Output -> A2 displayed to HEX displays specified in A1
 HEX_write_ASM:
 	PUSH {V1-V2}
-	LDR V1, =BASE_HEX_ADDR // Load base address into A3
+	LDR V1, =HEX_ADDR // Load base address into A3
 	MOV V2, #0 // Offset
 	
 writeLoop1:
