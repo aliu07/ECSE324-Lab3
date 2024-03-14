@@ -6,6 +6,7 @@ https://ecse324.ece.mcgill.ca/simulator/?sys=arm-de1soc
 # Switches & LEDs
 The Switches_and_LEDs.s contains 2 separate methods.
 **read_slider_switches_ASM**: Driver for swtiches - Returns the state of slider switches in register A1.
+
 **write_LEDs_ASM**:  Driver for LEDs -  Writes the state of LEDs (On/Off) given switch indices in register A1 to the LEDs' control register
 
 # HEX Displays
