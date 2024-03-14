@@ -1,14 +1,14 @@
 .global _start
 // Base address of push buttons
-.equ PB_ADDR, 0xff200050
+.equ PB_ADDR, 0xFF200050
+// Base address for interruptmask register of push buttons
+.equ PB_IM_ADDR, 0xFF200058
 // Base address of captureedge register of push buttons
 .equ PB_CER_ADDR, 0xFF20005C
 
 _start:
-	MOV A1, #0x1
-	// BL PB_data_is_pressed_ASM
-	BL PB_edgecp_is_pressed_ASM
-	B _end
+	MOV A1, #0x8
+	BL enable_PB_INT_ASM
 	
 _end:
 	B _end
@@ -64,16 +64,26 @@ PB_edgecp_is_pressed_ASM:
 	
 // This subroutine clears the pushbutton Edgecapture register. You can 
 // read the edgecapture register and write what you just read back to 
-// the edgecapture register to clear it.
+// the edgecapture register to clear it. (clear captureedge register 
+// with 1 bits)
 PB_clear_edgecp_ASM:
-	
+	LDR A1, =PB_CER_ADDR // Move base address of captureedge register into A2
+	LDR A2, [A1] // Load contents into A2
+	STR A2, [A1] // Write read content back into captureedge register
 
-// This subroutine receives pushbutton indices as an argument. Then, 
+// This subroutine receives pushbutton indices as an argument in A1. Then, 
 // it enables the interrupt function for the corresponding pushbuttons 
 // by setting the interrupt mask bits to '1'.
 enable_PB_INT_ASM:
+	LDR A2, =PB_IM_ADDR // Load interruptmask register address into A2
+	STR A1, [A2] // Write indices of interrupted buttons into memory
+	BX LR
 
-// This subroutine receives pushbutton indices as an argument. Then, 
+// This subroutine receives pushbutton indices as an argument in A1. Then, 
 // it disables the interrupt function for the corresponding pushbuttons 
 // by setting the interrupt mask bits to '0'.
 disable_PB_INT_ASM:
+	LDR A2, =PB_IM_ADDR // Load interruptmask register address into A2
+	MOV A3, #0xffffffff // Move string of 1-bits into A3
+	EOR A1, A1, A3 // Bitwise XOR to get complementary of input -> c XOR 1 = c'
+	STR A1, [A2] // Store value
