@@ -1,12 +1,12 @@
 .global _start
 
 // I/O device addresses
-.equ HEX_ADDR, 0xFF200020
-.equ SW_ADDR, 0xFF200040
-.equ LED_ADDR, 0xFF200000
-.equ PB_ADDR, 0xFF200050
-.equ PB_IM_ADDR, 0xFF200058
-.equ PB_CER_ADDR, 0xFF20005C
+.equ HEX_ADDR, 0xFF200020 // HEX displays
+.equ SW_ADDR, 0xFF200040 // Switches
+.equ LED_ADDR, 0xFF200000 // LEDs
+.equ PB_ADDR, 0xFF200050 // Pushbuttons
+.equ PB_IM_ADDR, 0xFF200058 // Pushbuttons' interruptmask register
+.equ PB_CER_ADDR, 0xFF20005C // Pushbuttons' captureedge register
 
 // Map holds 7 segment decoded values for 0 to 9
 SEV_SEG_DEC_MAP: .word 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x67
