@@ -29,7 +29,6 @@ SEV_SEG_DEC_MAP: .byte 0x03F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x
 
 // Setup
 _setup:
-	// TODO - Maybe will have to push V1
 	MOV A1, #0x3f // Indices for HEX0-HEX5
 	BL HEX_clear_ASM // Clear all HEX displays
 	MOV A1, #0x1f // Indices for HEX0-HEX4
@@ -110,22 +109,22 @@ do_addition:
 	POP {V1-V2}
 	B poll_buttons
 
-// Updates display given a BCD value in A1
+// Updates display given a BCD value in A1 -> Remember result r is stored in A4
 update_display:
-	PUSH {LR}
+	PUSH {V1-V3, LR}
 
 	// CHECK OVERFLOW
-	MOV A1, #0x9f // Lower 8 bits of binary representation of 99,999 (ImmVal can only go up to 256)
-	MOV A2, #0x86 // Middle 8 bits
-	LSL A2, #8 // Shift by 8
-	MOV A3, #0x01 // Top 8 bits
-	LSL A3, #16 // Shift by 16
-	ADD A1, A1, A2 // Sum up A1 + A2 + A3
-	ADD A1, A1, A3 // Sum up A1 + A2 + A3
-	CMP A4, A1 // Check if result displayed r > 99999
+	MOV V1, #0x9f // Lower 8 bits of binary representation of 99,999 (ImmVal can only go up to 256)
+	MOV V2, #0x86 // Middle 8 bits
+	LSL V2, #8 // Shift by 8
+	MOV V3, #0x01 // Top 8 bits
+	LSL V3, #16 // Shift by 16
+	ADD V1, V1, V2 // Sum up V1 + V2 + V3
+	ADD V1, V1, V3 // Sum up V1 + V2 + V3
+	CMP A4, V1 // Check if result displayed r > 99999
 	BGT overflow_state // Go to overflow state if so
-	RSB A1, A1, #0 // Negate the value to get -99999
-	CMP A4, A1 // Check if result displayed r < -99999 -- TODO: FIX
+	RSB V1, V1, #0 // Negate the value to get -99999
+	CMP A4, V1 // Check if result displayed r < -99999
 	BLT overflow_state // Go to overflor state if so
 
 	// CHECK NEGATIVE SIGN
@@ -133,9 +132,35 @@ update_display:
 	BLT HEX_display_neg // Display negative sign if so
 
 	// FLOOD DISPLAYS
-	
+	LDR V1, =SEV_SEG_DEC_MAP // Load base address of map
+	MOV A3, A1 // Move the input argument BCD values into A3 since we will use A1, A2 to write to HEX displays using subroutines
+	AND V2, A3, #0xf // Fetch 4 LSBs of input
+	LDRB A2, [V1, V2] // Base address + offset in V2 -> Value to be written to display
+	ASR A3, #4 // Shift input down by 4 bits
+	MOV A1, #0x1 // Index for HEX0
+	BL HEX_write_ASM
+	AND V2, A3, #0xf // Fetch 4 LSBs of remaining input
+	LDRB A2, [V1, V2] // Value to be written to display
+	ASR A3, #4 // Shift input down by 4 bits
+	MOV A1, #0x2 // Index for HEX1
+	BL HEX_write_ASM
+	AND V2, A3, #0xf // Fetch 4 LSBs of remaining input
+	LDRB A2, [V1, V2] // Value to be written to display
+	ASR A3, #4 // Shift input down by 4 bits
+	MOV A1, #0x4 // Index for HEX2
+	BL HEX_write_ASM
+	AND V2, A3, #0xf // Fetch 4 LSBs of remaining input
+	LDRB A2, [V1, V2] // Value to be written to display
+	ASR A3, #4 // Shift input down by 4 bits
+	MOV A1, #0x8 // Index for HEX3
+	BL HEX_write_ASM
+	AND V2, A3, #0xf // Fetch 4 LSBs of remaining input
+	LDRB A2, [V1, V2] // Value to be written to display
+	// Don't need to shift anymore since we have hit the end
+	MOV A1, #0x10 // Index for HEX4
+	BL HEX_write_ASM
 
-	POP {LR}
+	POP {V1-V3, LR}
 	BX LR
 
 // Result to transform to bcd always in A4
