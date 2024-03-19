@@ -62,7 +62,7 @@ handle_clear: // PB0 pressed
 	BL disable_PB_INT_ASM // Disable target pushbuttons
 	MOV A1, #0x1 // Index for PB0
 	BL PB_edgecp_is_pressed_ASM // Check if PB0 has been released
-	CMP A1, #1 // check if return value is 1 i.e. if button has been pressed and released
+	CMP A1, #1 // Check if return value is 1 i.e. if button has been pressed and released
 	BEQ _start // Branch back to setup
 	B handle_clear // Keep polling until button is released
 
@@ -119,6 +119,7 @@ do_operation:
 	ADDEQ A4, V1, V2 // Perform addition and store result back into A4 if condition is true
 	BL hex_to_bcd // Transform HEX into BCD value
 	BL update_display // Update HEX displays
+	MOV A1, #0xf // Enable all buttons
 	BL enable_PB_INT_ASM // Re-enable buttons
 	BL PB_clear_edgecp_ASM // Clear edgecapture register
 	POP {V1-V3}
@@ -145,7 +146,7 @@ update_display:
 	// CHECK NEGATIVE SIGN
 	CMP A4, #0 // Compare result displayed r to 0 to see if it is negative
 	BLT HEX_display_neg // Display negative sign if so
-
+	
 	// FLOOD DISPLAYS
 	LDR V1, =SEV_SEG_DEC_MAP // Load base address of map
 	MOV A3, A1 // Move the input argument BCD values into A3 since we will use A1, A2 to write to HEX displays using subroutines
@@ -251,6 +252,17 @@ hex_to_bcd_end:
 	POP {V1-V2, LR}
 	BX LR
 
+HEX_display_neg:
+	PUSH {LR}
+	MOV A1, #0x20 // Index of left-most HEX display
+	MOV A2, #0x40 // 7-segment value for dash
+	BL HEX_write_ASM // Write dash to the left-most HEX display
+	POP {LR}
+	BX LR
+
+
+
+
 
 // === SWITCHES AND LEDs - DRIVERS ===
 
@@ -275,9 +287,6 @@ write_LEDs_ASM:
 	BX LR
 
 
-
-
-
 // === HEX DISPLAYS - DRIVERS ===
 
 // This subroutine turns off all the segments of the selected 
@@ -299,21 +308,13 @@ HEX_flood_ASM:
 	BL HEX_write_ASM // Call subroutine
 	POP {LR}
 	BX LR 
-	
-HEX_display_neg:
-	PUSH {LR}
-	MOV A1, #0x20 // Index of left-most HEX display
-	MOV A2, #0x40 // 7-segment value for dash
-	BL HEX_write_ASM // Write dash to the left-most HEX display
-	POP {LR}
-	BX LR
 
 // Input -> A1, A2
 // A1: HEX display indices (0x0 - 0x1f)
 // A2: Value to display to HEX displays (0-9)
 // Output -> A2 displayed to HEX displays specified in A1
 HEX_write_ASM:
-	PUSH {V1-V2, LR}
+	PUSH {V1-V2, LR} // Technically don't need to push and pop LR, but keep to be safe
 	LDR V1, =HEX_ADDR // Load base address into A3
 	MOV V2, #0 // Offset
 	
@@ -335,9 +336,6 @@ writeLoop2:
 writeEnd:
 	POP {V1-V2, LR}
 	BX LR
-
-
-
 
 
 // === PUSH BUTTONS - DRIVERS ===
@@ -367,7 +365,7 @@ PB_data_is_pressed_ASM:
 	CMP V1, #0 // Compare result to 0
 	MOVGT A1, #1 // Return 1
 	MOVLE A1, #0 // Return 0
-	POP {LR}
+	POP {V1, LR}
 	BX LR
 	
 // This subroutine returns the indices of the pushbuttons that have 
