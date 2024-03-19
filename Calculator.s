@@ -1,4 +1,4 @@
-.global _setup
+.global _start
 
 // I/O device addresses
 .equ HEX_ADDR, 0xFF200020 // HEX displays
@@ -28,7 +28,7 @@ SEV_SEG_DEC_MAP: .byte 0x03F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x
 // If r > 99999 / 0x0001869F or r < -99999 / 0xFFFE7961, the HEX displays should output OVRFLO until the clear operation is performed
 
 // Setup
-_setup:
+_start:
 	MOV A1, #0x3f // Indices for HEX0-HEX5
 	BL HEX_clear_ASM // Clear all HEX displays
 	MOV A1, #0x1f // Indices for HEX0-HEX4
@@ -40,9 +40,12 @@ _setup:
 	MOV A4, #0 // Instantiate result variable r to A4 - DO NOT OVERWRITE
 
 poll_buttons:
+	// Poll slider switches and update LEDs accordingly
+	BL read_slider_switches_ASM
+	BL write_LEDs_ASM
+	
 	// THIS POLLING METHOD ASSUMES PRIORITY HIERARCHY OF PB0 > PB1 > PB2 > PB3
 	// PB0 HAS HIGHEST PRIO
-	BL PB_clear_edgecp_ASM // Clear the edgecapture register
 	BL read_PB_data_ASM // Load contents of PB into A1 -> Method returns value in A1
 	TST A1, #0x1 // Check if PB0 (clear) has been pressed
 	BGT handle_clear // Branch if clear button has been pressed
@@ -60,7 +63,7 @@ handle_clear: // PB0 pressed
 	MOV A1, #0x1 // Index for PB0
 	BL PB_edgecp_is_pressed_ASM // Check if PB0 has been released
 	CMP A1, #1 // check if return value is 1 i.e. if button has been pressed and released
-	BEQ _setup // Branch back to setup
+	BEQ _start // Branch back to setup
 	B handle_clear // Keep polling until button is released
 
 handle_multiplication: // PB1 pressed
@@ -69,11 +72,9 @@ handle_multiplication: // PB1 pressed
 	MOV A1, #0x2 // Index for PB1
 	BL PB_edgecp_is_pressed_ASM // Check if PB1 has been released
 	CMP A1, #1 // Check if return value is 1
-	MOVEQ A1, #0x2 // TODO - CHANGE... Index of display to flood
-	BEQ change_display // TODO - UPDATE TO REAL METHOD
+	MOV A1, #1 // Move 1 into A1 for multiplication in next subroutine
+	BEQ do_operation // Branch to perform multiplication
 	B handle_multiplication // Keep polling until button is released
-
-do_multiplication:
 
 handle_subtraction: // PB2 pressed
 	MOV A1, #0xb // Disable indices PB0, PB1, PB3 -> 1011
@@ -81,8 +82,8 @@ handle_subtraction: // PB2 pressed
 	MOV A1, #0x4 // Index for PB2
 	BL PB_edgecp_is_pressed_ASM // Check if PB2 has been released
 	CMP A1, #1 // Check if return value is 1
-	MOVEQ A1, #0x4 // TODO - CHANGE... Index of display to flood
-	BEQ change_display // TODO - UPDATE TO REAL METHOD
+	MOV A1, #2 // Move 2 into A1 for subtraction in next subroutine
+	BEQ do_operation // Branch to perform subtraction
 	B handle_subtraction // Keep polling until button is released
 
 handle_addition: // PB3 pressed
@@ -91,11 +92,17 @@ handle_addition: // PB3 pressed
 	MOV A1, #0x8 // Index for PB3
 	BL PB_edgecp_is_pressed_ASM // Check if PB3 has been released
 	CMP A1, #1 // Check if return value is 1
-	BEQ do_addition // Branch to perform addition
+	MOV A1, #3 // Move 3 into A1 for addition in next subroutine
+	BEQ do_operation // Branch to perform addition
 	B handle_addition // Keep polling until button is released
 
-do_addition:
-	PUSH {V1-V2} // Use V1, V2 to store m, n values read from switches
+// Receives opcode 1, 2 or 3 as input in A1
+// 1 = multiplication
+// 2 = subtraction
+// 3 = addition
+do_operation:
+	PUSH {V1-V3} // Use V1, V2 as scratch registers to store m, n values read from switches respectively. Use V3 as scratch register to temporarily hold opcode
+	MOV V3, A1 // Move opcode from A1 to V3
 	BL read_slider_switches_ASM // Load switches state into A1
 	MOV V1, A1 // Move contents into V1 -> n
 	AND V1, #0xf // Keep only 4 least significant bits
@@ -104,9 +111,17 @@ do_addition:
 	AND V2, V2, #0xf // Keep 4 LSBs -> This instruction isn't necessary since MSBs are all 0 bits, but keep to be safe
 	CMP A4, #0 // Check if r is 0
 	MOVNE V2, A4 // If r != 0, override m stored in V2 with r -> we perform r op n
-	ADD A4, V1, V2 // Perform addition and store result in A4
+	CMP V3, #1 // Check if we are doing multiplication
+	MULEQ A4, V1, V2 // Perform multiplication and store result back into A4 if condition is true
+	CMP V3, #2 // Check if we are doing subtraction
+	SUBEQ A4, V2, V1 // Perform subtraction and store result back into A4 if condition is true
+	CMP V3, #3 // Check if we are doing addition
+	ADDEQ A4, V1, V2 // Perform addition and store result back into A4 if condition is true
+	BL hex_to_bcd // Transform HEX into BCD value
 	BL update_display // Update HEX displays
-	POP {V1-V2}
+	BL enable_PB_INT_ASM // Re-enable buttons
+	BL PB_clear_edgecp_ASM // Clear edgecapture register
+	POP {V1-V3}
 	B poll_buttons
 
 // Updates display given a BCD value in A1 -> Remember result r is stored in A4
@@ -163,13 +178,8 @@ update_display:
 	POP {V1-V3, LR}
 	BX LR
 
-// Result to transform to bcd always in A4
-hex_to_bcd:
-	PUSH {LR}
-	// ...
-	POP {LR}
-	BX LR
-
+// Displays "OVRFLO" to the HEX displays and branches to handle_clear since nothing 
+// can be done until we clear the calculator when we hit overflow.
 overflow_state:
 	MOV A1, #0x20 // Index of HEX5
 	MOV A2, #0x3F // "O"
@@ -191,6 +201,55 @@ overflow_state:
 	BL HEX_write_ASM
 	B handle_clear // Poll clear button
 
+// Transforms results r in A4 from hexadecimal to BCD and stores result in A1
+hex_to_bcd:
+	PUSH {V1-V2, LR}
+	MOV A1, #0 // Clear A1 initially
+	MOV A2, A4 // Move result r into A2
+	TST A4, #0x80000000 // Check MSB of A4
+	RSBGT A2, A2, #0 // If MSB is 1, then the number is negative, so we have to negate to get positive value
+	MOV A3, #0x80000000 // Initialize A3 with the MSB mask
+	MOV V2, #0 // Index
+
+hex_to_bcd_loop:
+	LSL A1, #1 // Shift BCD result up
+	AND V1, A2, A3 // Temporarily store MSB of hex value in V1
+	LSR V1, #31 // Shift MSB into LSB position
+	ORR A1, A1, V1 // Bitwise OR between BCD result in A1 and temp LSB in V1
+	LSL A2, #1 // Shift A2 to the left by 1 -> Next cycle will take MSB again
+	CMP V2, #31 // Once we reach 33rd iteration, break since register only hold 32 bits
+	BEQ hex_to_bcd_end
+	
+	AND V1, A1, #0x000f0000 // Get bits 16-19
+	ASR V1, #16 // Shift down by 16
+	CMP V1, #5 // Check if greater than 5
+	ADDGE A1, A1, #0x00030000 // Add 3 if so
+	
+	AND V1, A1, #0x0000f000 // Get bits 12-15
+	ASR V1, #12 // Shift down by 12
+	CMP V1, #5 // Check if greater than 5
+	ADDGE A1, A1, #0x00003000 // Add 3 if so
+	
+	AND V1, A1, #0x00000f00 // Get bits 8-11
+	ASR V1, #8 // Shift down by 8
+	CMP V1, #5 // Check if greater than 5
+	ADDGE A1, A1, #0x00000300 // Add 3 if so
+	
+	AND V1, A1, #0x000000f0 // Get bits 4-7
+	ASR V1, #4 // Shift down by 4
+	CMP V1, #5 // check if value in V1 is greater than 5
+	ADDGE A1, A1, #0x00000030 // Add 3 if so
+	
+	AND V1, A1, #0x0000000f // Get bits 0-3
+	CMP V1, #5 // Check if value in V1 is greater than 5
+	ADDGE A1, A1, #0x00000003 // Add 3 if so -> dabble in double dabble
+	
+	ADD V2, V2, #1 // Increment index
+	B hex_to_bcd_loop
+
+hex_to_bcd_end:
+	POP {V1-V2, LR}
+	BX LR
 
 
 // === SWITCHES AND LEDs - DRIVERS ===
