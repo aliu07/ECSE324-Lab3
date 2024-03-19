@@ -100,6 +100,8 @@ handle_addition: // PB3 pressed
 // 1 = multiplication
 // 2 = subtraction
 // 3 = addition
+// n op m -> When r = 0
+// r op n -> when r != 0
 do_operation:
 	PUSH {V1-V3} // Use V1, V2 as scratch registers to store m, n values read from switches respectively. Use V3 as scratch register to temporarily hold opcode
 	MOV V3, A1 // Move opcode from A1 to V3
@@ -110,11 +112,12 @@ do_operation:
 	ASR V2, #4 // Remove 4 least significant bits
 	AND V2, V2, #0xf // Keep 4 LSBs -> This instruction isn't necessary since MSBs are all 0 bits, but keep to be safe
 	CMP A4, #0 // Check if r is 0
-	MOVNE V2, A4 // If r != 0, override m stored in V2 with r -> we perform r op n
+	MOVNE V2, V1 // Move n into V2
+	MOVNE V1, A4 // If r != 0, override m stored in V2 with r -> we perform r op n
 	CMP V3, #1 // Check if we are doing multiplication
 	MULEQ A4, V1, V2 // Perform multiplication and store result back into A4 if condition is true
 	CMP V3, #2 // Check if we are doing subtraction
-	SUBEQ A4, V2, V1 // Perform subtraction and store result back into A4 if condition is true
+	SUBEQ A4, V1, V2 // Perform subtraction and store result back into A4 if condition is true
 	CMP V3, #3 // Check if we are doing addition
 	ADDEQ A4, V1, V2 // Perform addition and store result back into A4 if condition is true
 	BL hex_to_bcd // Transform HEX into BCD value
@@ -144,8 +147,7 @@ update_display:
 	BLT overflow_state // Go to overflor state if so
 
 	// CHECK NEGATIVE SIGN
-	CMP A4, #0 // Compare result displayed r to 0 to see if it is negative
-	BLT HEX_display_neg // Display negative sign if so
+	BL HEX_display_neg // Display negative sign if so
 	
 	// FLOOD DISPLAYS
 	LDR V1, =SEV_SEG_DEC_MAP // Load base address of map
@@ -207,8 +209,10 @@ hex_to_bcd:
 	PUSH {V1-V2, LR}
 	MOV A1, #0 // Clear A1 initially
 	MOV A2, A4 // Move result r into A2
-	TST A4, #0x80000000 // Check MSB of A4
-	RSBGT A2, A2, #0 // If MSB is 1, then the number is negative, so we have to negate to get positive value
+	CMP A2, #0 // Check if A2 is negative
+	RSBLT A2, A2, #0 // If the number is negative, negate
+	// MVN A2, A2
+	// ADD A2, A2, #1
 	MOV A3, #0x80000000 // Initialize A3 with the MSB mask
 	MOV V2, #0 // Index
 
@@ -253,11 +257,13 @@ hex_to_bcd_end:
 	BX LR
 
 HEX_display_neg:
-	PUSH {LR}
+	PUSH {A1, LR}
+	CMP A4, #0 // Compare result displayed r to 0 to see if it is negative
 	MOV A1, #0x20 // Index of left-most HEX display
-	MOV A2, #0x40 // 7-segment value for dash
+	MOVLT A2, #0x40 // 7-segment value for dash if r is negative
+	MOVGE A2, #0x0 // Otherwise, we write nothing to clear it
 	BL HEX_write_ASM // Write dash to the left-most HEX display
-	POP {LR}
+	POP {A1, LR}
 	BX LR
 
 
