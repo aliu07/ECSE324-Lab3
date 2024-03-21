@@ -37,11 +37,28 @@ SERVICE_IRQ:
    on page 46 */
 
 Pushbutton_check:
-    CMP R5, #73
+    CMP R5, #73           // Check if interrupt raiser ID is pushbuttons'
+    BNE Timer_check       // If ID of interrupt raiser is not pushbuttons', check if it timer's
+    BL KEY_ISR            // Check which button was clicked -> Result is returned in A1
+    CMP A1, #3            // Check if result is 3
+    BLEQ pause            // Branch to pause subroutine if so
+    CMP A1, #2            // Check if result is 2
+    BLEQ change_direction // Branch to change direction subroutine if so
+    CMP A1, #1            // Check if result is 1
+    BLEQ speed_up         // Branch to speed up subroutine if so
+    CMP A1, #0            // Check if result is 0
+    BLEQ slow_down        // Branch to slow down subroutine if so
+    B EXIT_IRQ            // Exit IRQ
+
+Timer_check:
+    CMP R5, #29           // Check if interrupt raiser ID is timer's     
+    BNE UNEXPECTED        // If ID is still not recognized, then go to unexpected
+    BL TIMER_ISR          // Branch to timer ISR
+    B EXIT_IRQ            // Exit IRQ
 
 UNEXPECTED:
-    BNE UNEXPECTED      // if not recognized, stop here
-    BL KEY_ISR
+    B UNEXPECTED        
+    
 
 EXIT_IRQ:
     /* Write to the End of Interrupt Register (ICCEOIR) */
@@ -54,15 +71,25 @@ SERVICE_FIQ:
     B SERVICE_FIQ
 
 
-
-
-
-
-
-
-
 .text
 .global _start
+
+.equ HEX_ADDR, 0xFF200020 // HEX displays
+.equ SW_ADDR, 0xFF200040 // Switches
+.equ PB_ADDR, 0xFF200050 // Pushbuttons
+.equ PB_IM_ADDR, 0xFF200058 // Pushbuttons' interruptmask register
+.equ PB_CER_ADDR, 0xFF20005C // Pushbuttons' captureedge register
+.equ TIMER_ADDR, 0xFFFEC600 // Private timer
+.equ CONST_50MIL, 0xBEBC200 // 50,000,000 constant to use as load value in private timer TODO - change this back to 50M
+
+LETTER_MAP: .byte 0x77, 0x7C, 0x39, 0x5E, 0x79, 0x71, 0x3D, 0x76, 0x30, 0x1E // Holds 7 segment decoded values for A through J
+            .space 2
+NUM_MAP: .byte 0x03F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x67 // Holds 7 segment decoded values for 0 through 9
+         .space 2
+CURR_ROTATION: .byte 0x03F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x67 // Holds 7 segment decoded values of current rotation in display -> At start time, same as number map, but will change over time as we write different values to it...
+               .space 2
+CURR_DIR: .word 0x0 // Store direction bit in memory -> 0 = shift left, 1 = shift right
+CURR_PRESCALE: .word 0x2FAF080 // Prescaler bits of the timer... initially set to 50 million
 
 // By default, a pre-programmed sequence or message at least 10 characters long flows left to right, shifting one position 
 // every 0.25 seconds of simulated time, and wrapping around from right to left. Six characters of the message must be 
@@ -70,10 +97,10 @@ SERVICE_FIQ:
 // more than 0.25 s.
 
 // Push-buttons modify the direction and rate of flow of characters:
-//      - PB3 pauses and resumes character movement, 
-//      - PB2 reverses direction of movement, 
-//      - PB1 makes movement faster, and
-//      - PB0 makes movement slower.
+//      - PB3 pauses and resumes character movement 
+//      - PB2 reverses direction of movement 
+//      - PB1 makes movement faster
+//      - PB0 makes movement slower
 
 // LEDs display the speed of movement relative to min and max; when paused, all LEDs should be off. When at max speed, all 
 // LEDs should be on. Implement at least five rates, including 1/0.25 s; choose the other rates at your discretion. Choose 
@@ -85,6 +112,13 @@ SERVICE_FIQ:
 // Implement at least 10 sequences or possible changes to the sequence.
 
 _start:
+    // Theoretically, the xline below are not needed, but keep JUST TO BE SAFE
+    BL PB_clear_edgecp_ASM // Clear edgecapture register to ensure no unwanted interrupts get thrown
+    BL ARM_TIM_read_INT_ASM // Read F bit -> returned in A1
+    CMP A1, #1 // Check if F = 1
+    BLEQ ARM_TIM_clear_INT_ASM // Clear F bit of timer
+
+
     /* Set up stack pointers for IRQ and SVC processor modes */
     MOV R1, #0b11010010      // interrupts masked, MODE = IRQ
     MSR CPSR_c, R1           // change to IRQ mode
@@ -106,9 +140,42 @@ _start:
     MOV R0, #0b01010011      // IRQ unmasked, MODE = SVC
     MSR CPSR_c, R0
 
+_setup: // This is where you write your main program task(s)
+    // SETUP DISPLAYS
+    LDR V1, =NUM_MAP // Load base address of num map into V1
+
+    MOV A1, #0x1 // Index for HEX0
+    LDRB A2, [V1, #5] // Load 5 into A2
+    BL HEX_write_ASM // Write 5 to HEX0
+
+    MOV A1, #0x2 // Index for HEX1
+    LDRB A2, [V1, #4] // Load 4 into A2
+    BL HEX_write_ASM // Write 4 to HEX1
+
+    MOV A1, #0x4 // Index for HEX2
+    LDRB A2, [V1, #3] // Load 3 into A2
+    BL HEX_write_ASM // Write 3 to HEX2
+
+    MOV A1, #0x8 // Index for HEX3
+    LDRB A2, [V1, #2] // Load 2 into A2
+    BL HEX_write_ASM // Write 2 to HEX3
+
+    MOV A1, #0x10 // Index for HEX4
+    LDRB A2, [V1, #1] // Load 1 into A2
+    BL HEX_write_ASM // Write 1 to HEX4
+
+    MOV A1, #0x20 // Index for HEX5
+    LDRB A2, [V1] // Load 0 into A2
+    BL HEX_write_ASM // Write 0 to HEX5
+
+    // SETUP TIMER
+    LDR A1, =CONST_50MIL // Move load value into A1
+    MOV A2, #0x7 // Set config bits -> I = 1, A = 1, E = 1
+    BL ARM_TIM_config_ASM // Configure timer
+
 IDLE:
-    B IDLE // This is where you write your main program task(s)
-	
+    B IDLE
+
 CONFIG_GIC:
     PUSH {LR}
     /* To configure the FPGA KEYS interrupt (ID 73):
@@ -183,44 +250,226 @@ KEY_ISR:
     LDR R1, [R0, #0xC]     // read edge capture register
     MOV R2, #0xF
     STR R2, [R0, #0xC]     // clear the interrupt
-    LDR R0, =0xFF200020    // base address of HEX display
 
-CHECK_KEY0:
-    MOV R3, #0x1
-    ANDS R3, R3, R1        // check for KEY0
-    BEQ CHECK_KEY1
-    MOV R2, #0b00111111
-    STR R2, [R0]           // display "0"
-    B END_KEY_ISR
+    CHECK_KEY0:
+        MOV R3, #0x1
+        ANDS R3, R3, R1        // check for KEY0
+        BEQ CHECK_KEY1
+        MOV A1, #0             // Move 0 for pause
+        B END_KEY_ISR
 
-CHECK_KEY1:
-    MOV R3, #0x2
-    ANDS R3, R3, R1        // check for KEY1
-    BEQ CHECK_KEY2
-    MOV R2, #0b00000110
-    STR R2, [R0]           // display "1"
-    B END_KEY_ISR
+    CHECK_KEY1:
+        MOV R3, #0x2
+        ANDS R3, R3, R1        // check for KEY1
+        BEQ CHECK_KEY2
+        MOV A1, #1             // Move 1 for change direction
+        B END_KEY_ISR
 
-CHECK_KEY2:
-    MOV R3, #0x4
-    ANDS R3, R3, R1        // check for KEY2
-    BEQ IS_KEY3
-    MOV R2, #0b01011011
-    STR R2, [R0]           // display "2"
-    B END_KEY_ISR
+    CHECK_KEY2:
+        MOV R3, #0x4
+        ANDS R3, R3, R1        // check for KEY2
+        BEQ IS_KEY3
+        MOV A1, #2             // Move 2 for speed up
+        B END_KEY_ISR
 
-IS_KEY3:
-    MOV R2, #0b01001111
-    STR R2, [R0]           // display "3"
+    IS_KEY3:
+        MOV A1, #3             // Move 3 for slow down
 
-END_KEY_ISR:
-    BX LR
+    END_KEY_ISR:
+        BX LR
+
+TIMER_ISR:
+    PUSH {LR}
+    BL ARM_TIM_clear_INT_ASM // Clear the interrupt
+    LDR A1, =CURR_DIR        // Load base address of current direction variable
+    LDR A2, [A1]             // Load contents of variable
+    CMP A2, #0               // Check if variable is 0 or 1
+    BLEQ shift_left          // Shift left if variable is 0
+    BLNE shift_right         // Else shift right (var = 1)
+    POP {PC}
+
+pause: // PB3
+    PUSH {LR}
+    LDR A3, =TIMER_ADDR // Load base address of timer into A3
+    LDR A2, [A3, #8] // Load content of prescaler bits and config bits into A2
+    EOR A2, A2, #0x00000001 // Flip enable bit E (LSB)
+    STR A2, [A3, #8] // Store new config bits
+    POP {PC}
+
+change_direction: // PB2
+    PUSH {LR}
+    LDR A1, =CURR_DIR // Load address of current direction value
+    LDR A2, [A1] // Load contents of current direction value
+    EOR A2, A2, #0x00000001 // Flip the MSB current direction bit
+    STR A2, [A1] // Store the new direction value
+    POP {PC}
+
+speed_up: // PB1
+    B speed_up
+
+slow_down: // PB0
+    B slow_down
+
+shift_left:
+	PUSH {V1-V3, LR}
+    MOV A1, #0x20 // We want to read HEX5
+    BL HEX_read_ASM // Load contents of HEX5 into A1
+    MOV A2, #0 // Instantiate index to 0 -> We want to find index corresponding to contents in A1
+    LDR V3, =LETTER_MAP // Load letter map base address into V3
+    LDR V4, =NUM_MAP // Load num map base address into V4
+    
+    left_find_index_loop:
+        CMP A2, #10 // Check if index = 10 -> This is our termination condition
+        BEQ UNEXPECTED // Branch to unexpected if so (this should never happen)
+        LDRB A3, [V3, A2] // Load element at index from letter map into A3
+        CMP A1, A3 // Compare value read from HEX5 in A1 to loaded value from map in A3
+        MOVEQ A1, A2 // If values are same, then move index into A1
+        BEQ perform_shift_left // Branch to perform left shift
+        LDRB A3, [V4, A2] // Load element at index from num map
+        CMP A1, A3 // Compate value read from HEX5 in A1 to loaded value from map in A3
+        MOVEQ A1, A2 // If values are the same, then move index into A1
+        BEQ perform_shift_left // Branch to perform left shift
+        ADD A2, A2, #1 // Increment index by 1
+        B left_find_index_loop // Loop back
+
+
+    // Nested subroutine that performs the shift given target index in A1
+    perform_shift_left:
+        MOV A4, #0x20 // We start with index of HEX5
+
+    shift_left_loop:
+        CMP A4, #0 // Terminate after we have written to HEX0
+        BEQ shift_left_end // Branch to end section if so
+        ADD A1, A1, #1 // Increment index by 1 to find next element to write to HEX5 -> index = i
+        
+        // Adjust index -> special case when index = 10
+        CMP A1, #10 // Check if A1 is 10
+        MOVEQ A1, #0 // Move 0 if index was 10
+
+        LDR V1, =CURR_ROTATION // Load base address of current rotation array
+        LDRB A2, [V1, A1] // Load element at index i from current rotation
+        AND A3, A2, #0x00000080 // Check bit 8 of the element
+        CMP A3, #0 // Check if bit 8 is 0 or 1 -> if 0 then load from number map... if 1 then load from letter map
+        LDREQ V2, =NUM_MAP // Load number map if bit 8 is 0
+        LDRNE V2, =LETTER_MAP // Load letter map if bit 8 is 1
+        LDRB A2, [V1, A1] // Load element at index i from appropriate map into A2
+        STRB A2, [V1, A1] // Store the element into current rotation array at position i
+        MOV V3, A1 // Temporarily move index into V3
+        MOV A1, A4 // Move HEX index into A1
+        BL HEX_write_ASM // Write value in A2 to current HEX display
+        MOV A1, V3 // Move index back into A1
+        ASR A4, #1 // Shift down by 1 for index of next HEX display
+        B shift_left_loop // Branch back to loop
+
+    shift_left_end:
+        POP {V1-V3, PC}
+
+shift_right:
+    PUSH {V1-V3, LR}
+    MOV A1, #0x01 // We want to read HEX0
+    BL HEX_read_ASM // Load contents of HEX0 into A1
+    MOV A2, #0 // Instantiate index to 0 -> We want to find index corresponding to contents in A1
+    LDR V3, =LETTER_MAP // Load letter map base address into V3
+    LDR V4, =NUM_MAP // Load num map base address into V4
+
+    right_find_index_loop:
+        CMP A2, #10 // Check if index = 10 -> This is our termination condition
+        BEQ UNEXPECTED // Branch to unexpected if so (this should never happen)
+        LDRB A3, [V3, A2] // Load element at index from letter map into A3
+        CMP A1, A3 // Compare value read from HEX5 in A1 to loaded value from map in A3
+        MOVEQ A1, A2 // If values are same, then move index into A1
+        BEQ perform_shift_right // Branch to perform right shift
+        LDRB A3, [V4, A2] // Load element at index from num map
+        CMP A1, A3 // Compate value read from HEX5 in A1 to loaded value from map in A3
+        MOVEQ A1, A2 // If values are the same, then move index into A1
+        BEQ perform_shift_right // Branch to perform right shift
+        ADD A2, A2, #1 // Increment index by 1
+        B right_find_index_loop // Loop back
+
+    // Nested subroutine that performs the shift given target index in A1
+    perform_shift_right:
+        MOV A4, #0x1 // We start with index of HEX0
+
+    shift_right_loop:
+        CMP A4, #0x40 // Terminate after we have written to HEX5
+        BEQ shift_right_end // Branch to end section if so
+        SUB A1, A1, #1 // Decrement index by 1 to find next element to write to HEX5 -> index = i
+        
+        // Adjust index -> special case when index = -1
+        CMP A1, #-1 // Check if A1 is -1
+        MOVEQ A1, #9 // Move 9 if index was -1
+        
+        LDR V1, =CURR_ROTATION // Load base address of current rotation array
+        LDRB A2, [V1, A1] // Load element at index i from current rotation
+        AND A3, A2, #0x00000080 // Check bit 8 of the element
+        CMP A3, #0 // Check if bit 8 is 0 or 1 -> if 0 then load from number map... if 1 then load from letter map
+        LDREQ V2, =NUM_MAP // Load number map if bit 8 is 0
+        LDRNE V2, =LETTER_MAP // Load letter map if bit 8 is 1
+        LDRB A2, [V1, A1] // Load element at index i from appropriate map into A2
+        STRB A2, [V1, A1] // Store the element into current rotation array at position i
+        MOV V3, A1 // Temporarily move index into V3
+        MOV A1, A4 // Move HEX index into A1
+        BL HEX_write_ASM // Write value in A2 to current HEX display
+        MOV A1, V3 // Move index back into A1
+        LSL A4, #1 // Shift down by 1 for index of next HEX display
+        B shift_right_loop // Branch back to loop
+
+    shift_right_end:
+        POP {V1-V3, PC}
+
+
+// This subroutine accounts for the special case when index = 10 when shifting left
+adjust_index_left:
+    PUSH {LR}
+    CMP A1, #10 // Check if A1 is 10
+    MOVEQ A1, #0 // Move 0 if index was 10
+    POP {PC}
+
+// This subroutine accounts for the special case when index = -1 when shifting right
+adjust_index_right:
+    PUSH {LR}
+    CMP A1, #-1 // Check if A1 is 0
+    MOVEQ A1, #9 // Move 9 if index was -1
+    POP {PC}
 
 
 
+// === TIMER - DRIVERS ===
 
+// This subroutine is used to configure the timer (ARM V9 timer has 200MHz freq)
+// A1: Load value -> value timer will count down from
+// A2: Configuration bits (
+//		I = interrrupt as soon as count hits 0, 
+//		A = if A is 1, then load value is automatically reloaded into timer... 
+//			if A is 0, then timer simply stops after reaching 0, 
+//		E = enable timer to count down
+// )
+ARM_TIM_config_ASM: 
+	PUSH {LR}
+	LDR A3, =TIMER_ADDR // Load base address of timer
+	STR A1, [A3] // Store load value into timer
+	STR A2, [A3, #8] // Store control value of timer (Base address + 8)
+	POP {PC}
 
+// This subroutine returns the “F” value (0x00000000 or 0x00000001) from 
+// the ARM A9 private timer interrupt status register in A1.
+ARM_TIM_read_INT_ASM:
+	PUSH {LR}
+	LDR A2, =TIMER_ADDR // Load base address into A2
+	LDR A1, [A2, #12] // Load control register value into A1
+	AND A1, A1, #0x00000001 // Keep only F bit which is LSB
+	POP {PC}
 
+// This subroutine clears the “F” value in the ARM A9 private timer 
+// interrupt status register. The F bit can be cleared to 0 by writing 
+// a 0x00000001 to the interrupt status register.
+ARM_TIM_clear_INT_ASM:
+	PUSH {LR}
+	LDR A2, =TIMER_ADDR // Load base address into A2
+	MOV A1, #1 // Move 1 into A1 to clear interrupt bit F in timer
+	ADD A2, A2, #12 // Add 12 to get address of where F bit is stored
+	STR A1, [A2] // Write value in memory
+	POP {PC}
 
 // === SWITCHES - DRIVERS ===
 
@@ -231,15 +480,14 @@ read_slider_switches_ASM:
 	PUSH {LR}
 	LDR A2, =SW_ADDR     // load the address of slider switch state
 	LDR A1, [A2]         // read slider switch state 
-	POP {LR}
-	BX LR
+	POP {PC}
 
 
 
 // === HEX DISPLAYS - DRIVERS ===
 
 // This subroutine writes a value to a HEX dislay
-// A1: Contains one-hot index of the hex display we want to write to
+// A1: Contains one-hot index of the HEX display we want to write to
 // A2: Contains the value we want to write to that display
 HEX_write_ASM:
 	PUSH {V1-V2}
@@ -258,6 +506,26 @@ HEX_write_ASM:
 	POP {V1-V2}
 	BX LR
 
+// This subroutine reads a value from a HEX display given an index
+// A1: Contains one-hot index of the HEX display we want to read from
+// A1 will also contain the contents of the HEX display we read from when returning form the subroutine
+HEX_read_ASM:
+    PUSH {V1-V2}
+    LDR V1, =HEX_ADDR // Load base address into A3 (also the address of HEX0)
+	CMP A1, #0x2 // Check if we have to read from HEX1
+	ADDEQ V1, V1, #1 // Add 1 to base address to get address of HEX1
+	CMP A1, #0x4 // Check if we have to read from HEX2
+	ADDEQ V1, V1, #2 // Add 2 to base address to get address of HEX2
+	CMP A1, #0x8 // Check if we have to read from HEX3
+	ADDEQ V1, V1, #3 // Add 3 to base address to get address of HEX3
+	CMP A1, #0x10 // Check if we have to read from HEX4
+	ADDEQ V1, V1, #16 // Add 16 to base address to get address of HEX4
+	CMP A1, #0x20 // Check if we have to read from HEX5
+	ADDEQ V1, V1, #17 // Add 17 to base address to get address  of HEX5
+	LDRB A1, [V1] // Load value of HEX display into A1
+    POP {V1-V2}
+    BX LR
+
 
 
 // === PUSH BUTTONS - DRIVERS ===
@@ -272,23 +540,21 @@ HEX_write_ASM:
 read_PB_data_ASM:
 	PUSH {LR}
 	LDR A1, =PB_ADDR // Load base address
-	LDR A2, [A1] // Load contents of push buttons into A2
-	MOV A1, A2 // Move value into A1 to return
-	POP {LR}
-	BX LR
+	LDR A2, [A1]     // Load contents of push buttons into A2
+	MOV A1, A2       // Move value into A1 to return
+	POP {PC}
 
 // This subroutine receives a pushbutton index as an argument in A1. 
 // Then, it returns 0x00000001 if the corresponding pushbutton is pressed.
 PB_data_is_pressed_ASM:
 	PUSH {V1, LR}
-	MOV V1, A1 // Move index argument into A2
+	MOV V1, A1          // Move index argument into A2
 	BL read_PB_data_ASM // Call method -> return value in A1
-	AND V1, V1, A1 // Bitwise AND contents and given index
-	CMP V1, #0 // Compare result to 0
-	MOVGT A1, #1 // Return 1
-	MOVLE A1, #0 // Return 0
-	POP {V1, LR}
-	BX LR
+	AND V1, V1, A1      // Bitwise AND contents and given index
+	CMP V1, #0          // Compare result to 0
+	MOVGT A1, #1        // Return 1
+	MOVLE A1, #0        // Return 0
+	POP {V1, PC}
 	
 // This subroutine returns the indices of the pushbuttons that have 
 // been pressed and then released (the edge bits from the pushbuttons’ 
@@ -296,24 +562,22 @@ PB_data_is_pressed_ASM:
 read_PB_edgecp_ASM:
 	PUSH {LR}
 	LDR A1, =PB_CER_ADDR // Load base address of captureedge register
-	LDR A2, [A1] // Load contents into A2
-	MOV A1, A2 // Move result into A1 to return
-	POP {LR}
-	BX LR
+	LDR A2, [A1]         // Load contents into A2
+	MOV A1, A2           // Move result into A1 to return
+	POP {PC}
 
 // This subroutine receives a pushbutton index as an argument in A1. 
 // Then, it returns 0x00000001 if the corresponding pushbutton 
 // has been pressed and released.
 PB_edgecp_is_pressed_ASM:
 	PUSH {V1, LR}
-	MOV V1, A1 // Move index into V1
+	MOV V1, A1            // Move index into V1
 	BL read_PB_edgecp_ASM // Call subroutine -> result returned in A1
-	AND V1, V1, A1 // Bitwise AND given index and contents of edgecapture register
-	CMP V1, #0 // Compare result of AND to 0
-	MOVGT A1, #1 // Return 1
-	MOVLE A1, #0 // Return 0
-	POP {V1, LR}
-	BX LR
+	AND V1, V1, A1        // Bitwise AND given index and contents of edgecapture register
+	CMP V1, #0            // Compare result of AND to 0
+	MOVGT A1, #1          // Return 1
+	MOVLE A1, #0          // Return 0
+	POP {V1, PC}
 	
 // This subroutine clears the pushbutton Edgecapture register. You can 
 // read the edgecapture register and write what you just read back to 
@@ -322,10 +586,9 @@ PB_edgecp_is_pressed_ASM:
 PB_clear_edgecp_ASM:
 	PUSH {LR}
 	LDR A1, =PB_CER_ADDR // Move base address of captureedge register into A2
-	LDR A2, [A1] // Load contents into A2
-	STR A2, [A1] // Write read content back into captureedge register
-	POP {LR}
-	BX LR
+	LDR A2, [A1]         // Load contents into A2
+	STR A2, [A1]         // Write read content back into captureedge register
+	POP {PC}
 
 // This subroutine receives pushbutton indices as an argument in A1. Then, 
 // it enables the interrupt function for the corresponding pushbuttons 
@@ -334,8 +597,7 @@ enable_PB_INT_ASM:
 	PUSH {LR}
 	LDR A2, =PB_IM_ADDR // Load interruptmask register address into A2
 	STR A1, [A2] // Write indices of interrupted buttons into memory
-	POP {LR}
-	BX LR
+	POP {PC} 
 
 // This subroutine receives pushbutton indices as an argument in A1. Then, 
 // it disables the interrupt function for the corresponding pushbuttons 
@@ -346,5 +608,4 @@ disable_PB_INT_ASM:
 	MOV A3, #0x0000000f // Move string of 1-bits into A3
 	EOR A1, A1, A3 // Bitwise XOR to get complementary of input -> c XOR 1 = c'
 	STR A1, [A2] // Store value
-	POP {LR}
-	BX LR
+	POP {PC}
