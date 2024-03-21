@@ -74,13 +74,14 @@ SERVICE_FIQ:
 .text
 .global _start
 
+.equ LED_ADDR, 0xFF200000 // LEDs
 .equ HEX_ADDR, 0xFF200020 // HEX displays
 .equ SW_ADDR, 0xFF200040 // Switches
 .equ PB_ADDR, 0xFF200050 // Pushbuttons
 .equ PB_IM_ADDR, 0xFF200058 // Pushbuttons' interruptmask register
 .equ PB_CER_ADDR, 0xFF20005C // Pushbuttons' captureedge register
 .equ TIMER_ADDR, 0xFFFEC600 // Private timer
-.equ CONST_50MIL, 0xBEBC200 // 50,000,000 constant to use as load value in private timer TODO - change this back to 50M
+.equ CONST_10MIL, 0x989680 // 10,000,000 constant to use as load value in private timer TODO - change this back to 50M
 
 LETTER_MAP: .byte 0x77, 0x7C, 0x39, 0x5E, 0x79, 0x71, 0x3D, 0x76, 0x30, 0x1E // Holds 7 segment decoded values for A through J
             .space 2
@@ -112,35 +113,12 @@ CURR_PRESCALE: .word 0x2FAF080 // Prescaler bits of the timer... initially set t
 // Implement at least 10 sequences or possible changes to the sequence.
 
 _start:
-    // Theoretically, the xline below are not needed, but keep JUST TO BE SAFE
+    // Theoretically, the line below are not needed, but keep JUST TO BE SAFE
     BL PB_clear_edgecp_ASM // Clear edgecapture register to ensure no unwanted interrupts get thrown
     BL ARM_TIM_read_INT_ASM // Read F bit -> returned in A1
     CMP A1, #1 // Check if F = 1
     BLEQ ARM_TIM_clear_INT_ASM // Clear F bit of timer
 
-
-    /* Set up stack pointers for IRQ and SVC processor modes */
-    MOV R1, #0b11010010      // interrupts masked, MODE = IRQ
-    MSR CPSR_c, R1           // change to IRQ mode
-    LDR SP, =0xFFFFFFFF - 3  // set IRQ stack to A9 on-chip memory
-    /* Change to SVC (supervisor) mode with interrupts disabled */
-    MOV R1, #0b11010011      // interrupts masked, MODE = SVC
-    MSR CPSR, R1             // change to supervisor mode
-    LDR SP, =0x3FFFFFFF - 3  // set SVC stack to top of DDR3 memory
-    BL  CONFIG_GIC           // configure the ARM GIC
-    // NOTE: write to the pushbutton KEY interrupt mask register
-    // Or, you can call enable_PB_INT_ASM subroutine from previous task
-    // to enable interrupt for ARM A9 private timer, 
-    // use ARM_TIM_config_ASM subroutine
-
-    LDR R0, =0xFF200050      // pushbutton KEY base address
-    MOV R1, #0xF             // set interrupt mask bits
-    STR R1, [R0, #0x8]       // interrupt mask register (base + 8)
-    // enable IRQ interrupts in the processor
-    MOV R0, #0b01010011      // IRQ unmasked, MODE = SVC
-    MSR CPSR_c, R0
-
-_setup: // This is where you write your main program task(s)
     // SETUP DISPLAYS
     LDR V1, =NUM_MAP // Load base address of num map into V1
 
@@ -168,10 +146,38 @@ _setup: // This is where you write your main program task(s)
     LDRB A2, [V1] // Load 0 into A2
     BL HEX_write_ASM // Write 0 to HEX5
 
-    // SETUP TIMER
-    LDR A1, =CONST_50MIL // Move load value into A1
+    // SETUP LEDs - 3/5th lit up at start up
+    MOV A1, #0x3f // We want to light up 6 LEDs out of the 10 starting from the right
+    BL write_LEDs_ASM
+
+    /* Set up stack pointers for IRQ and SVC processor modes */
+    MOV R1, #0b11010010      // interrupts masked, MODE = IRQ
+    MSR CPSR_c, R1           // change to IRQ mode
+    LDR SP, =0xFFFFFFFF - 3  // set IRQ stack to A9 on-chip memory
+    /* Change to SVC (supervisor) mode with interrupts disabled */
+    MOV R1, #0b11010011      // interrupts masked, MODE = SVC
+    MSR CPSR, R1             // change to supervisor mode
+    LDR SP, =0x3FFFFFFF - 3  // set SVC stack to top of DDR3 memory
+    BL  CONFIG_GIC           // configure the ARM GIC
+    // NOTE: write to the pushbutton KEY interrupt mask register
+    // Or, you can call enable_PB_INT_ASM subroutine from previous task
+    BL enable_PB_INT_ASM
+    // to enable interrupt for ARM A9 private timer, 
+    // use ARM_TIM_config_ASM subroutine
+    LDR A1, =CONST_10MIL // Move load value into A1 
     MOV A2, #0x7 // Set config bits -> I = 1, A = 1, E = 1
-    BL ARM_TIM_config_ASM // Configure timer
+    MOV A3, #0x4 // Set prescaler bits to 4
+    LSL A3, #8 // Shift up by 8
+    ADD A2, A2, A3 // Concatenante prescaler and config bits into A2
+    BL ARM_TIM_config_ASM // Configure timer (10M load value w/ prescale = 4 -> 50MHz frequency at setup)
+
+
+    LDR R0, =0xFF200050      // pushbutton KEY base address
+    MOV R1, #0xF             // set interrupt mask bits
+    STR R1, [R0, #0x8]       // interrupt mask register (base + 8)
+    // enable IRQ interrupts in the processor
+    MOV R0, #0b01010011      // IRQ unmasked, MODE = SVC
+    MSR CPSR_c, R0
 
 IDLE:
     B IDLE
@@ -294,6 +300,9 @@ pause: // PB3
     LDR A2, [A3, #8] // Load content of prescaler bits and config bits into A2
     EOR A2, A2, #0x00000001 // Flip enable bit E (LSB)
     STR A2, [A3, #8] // Store new config bits
+
+    // CHANGE LEDS...
+
     POP {PC}
 
 change_direction: // PB2
@@ -305,10 +314,92 @@ change_direction: // PB2
     POP {PC}
 
 speed_up: // PB1
-    B speed_up
+    PUSH {V1, LR}
+    LDR A1, =TIMER_ADDR // Move timer address into A1
+    LDR A2, [A1, #8] // Load contents of prescaler and config bits into A2
+    AND A2, A2, #0x0000ff00 // Keep only prescaler bits
+    ASR A2, #8 // Shift prescaler bits all the way down
 
+    // Update speed
+    CMP A2, #16 // Check if prescale = 16
+    MOVEQ A2, #8 // If so, new prescale = 8
+    BEQ speed_up_end // And exit function
+    CMP A2, #8 // Check if prescale = 8
+    MOVEQ A2, #4 // If so, new prescale = 4
+    BEQ speed_up_end // And exit function
+    CMP A2, #4 // Check if prescale = 4
+    MOVEQ A2, #2 // If so, new prescale = 2
+    BEQ speed_up_end // And exit function
+    CMP A2, #2 // Check if prescale = 2
+    MOVEQ A2, #1 // If so, new prescale = 1
+    // Ignore case prescale = 1 since 1 is fastest... no need to modify anything
+
+    speed_up_end: // Update LEDs
+        MOV V1, A2 // Move new prescale value into V1
+        LSL A2, #8 // Shift up prescaler bits to right position
+        LDR A3, [A1, #8] // Load contents of prescaler and config bits into A3
+        AND A3, A3, #0xf // Keep only config bits
+        ORR A2, A2, A3 // Bitwise OR between A2 and A3 to concatenate prescaler and config bits
+        STR A2, [A1, #8] // Write new prescaler bits to memory
+        CMP V1, #1 // Check if prescale = 1 -> MAX SPEED
+        MOVEQ A2, #0x3 // Upper bits
+        LSLEQ A2, #8 // Shift up 8
+        MOVEQ A1, #0xff // Lower bits
+        ADDEQ A1, A1, A2 // Light up 10 LEDs (argument for write_LEDs_ASM)
+        CMP V1, #2 // Check if prescale = 2
+        MOVEQ A1, #0xff // Light up 8 LEDs
+        CMP V1, #4 // Check if prescale = 4
+        MOVEQ A1, #0x3f // Light up 6 LEDs
+        CMP V1, #8 // Check if prescale = 8
+        MOVEQ A1, #0xf // Light up 4 LEDs
+        CMP V1, #16 // Check if prescale = 16
+        MOVEQ A1, #0x3 // Light up 2 LEDs 
+        BL write_LEDs_ASM // Update LEDs
+        POP {V1, PC}
+        
 slow_down: // PB0
-    B slow_down
+    PUSH {V1, LR}
+    LDR A1, =TIMER_ADDR // Move timer address into A1
+    LDR A2, [A1, #8] // Load contents of prescaler and config bits into A2
+    AND A2, A2, #0x0000ff00 // Keep only prescaler bits
+    ASR A2, #8 // Shift prescaler bits all the way down
+    
+    // Update speed
+    CMP A2, #1 // Check if prescale = 1
+    MOVEQ A2, #2 // If so, new prescale = 2
+    BEQ slow_down_end // And exit function
+    CMP A2, #2 // Check if prescale = 2
+    MOVEQ A2, #4 // If so, new prescale = 4
+    BEQ slow_down_end // And exit function
+    CMP A2, #4 // Check if prescale = 4
+    MOVEQ A2, #8 // If so, new prescale = 8
+    BEQ slow_down_end // And exit function
+    CMP A2, #8 // Check if prescale = 8
+    MOVEQ A2, #16 // If so, new prescale = 16
+    // Ignore case prescale = 16 since 16 is slowest... no need to modify anything
+
+    slow_down_end: // Update LEDs
+        MOV V1, A2 // Move new prescale value into V1
+        LSL A2, #8 // Shift up prescaler bits to right position
+        LDR A3, [A1, #8] // Load contents of prescaler and config bits into A3
+        AND A3, A3, #0xf // Keep only config bits
+        ORR A2, A2, A3 // Bitwise OR between A2 and A3 to concatenate prescaler and config bits
+        STR A2, [A1, #8] // Write new prescaler bits to memory
+        CMP V1, #1 // Check if prescale = 1 -> MAX SPEED
+        MOVEQ A2, #0x3 // Upper bits
+        LSLEQ A2, #8 // Shift up 8
+        MOVEQ A1, #0xff // Lower bits
+        ADDEQ A1, A1, A2 // Light up 10 LEDs (argument for write_LEDs_ASM)
+        CMP V1, #2 // Check if prescale = 2
+        MOVEQ A1, #0xff // Light up 8 LEDs
+        CMP V1, #4 // Check if prescale = 4
+        MOVEQ A1, #0x3f // Light up 6 LEDs
+        CMP V1, #8 // Check if prescale = 8
+        MOVEQ A1, #0xf // Light up 4 LEDs
+        CMP V1, #16 // Check if prescale = 16
+        MOVEQ A1, #0x3 // Light up 2 LEDs 
+        BL write_LEDs_ASM // Update LEDs
+        POP {V1, PC}
 
 shift_left:
 	PUSH {V1-V3, LR}
@@ -596,8 +687,10 @@ PB_clear_edgecp_ASM:
 enable_PB_INT_ASM:
 	PUSH {LR}
 	LDR A2, =PB_IM_ADDR // Load interruptmask register address into A2
-	STR A1, [A2] // Write indices of interrupted buttons into memory
-	POP {PC} 
+	MOV A3, #0x0000000f // Move string of 1-bits into A3
+	EOR A1, A1, A3 // Bitwise XOR to get complementary of input -> c XOR 1 = c'
+	STR A1, [A2] // Store value
+	POP {PC}
 
 // This subroutine receives pushbutton indices as an argument in A1. Then, 
 // it disables the interrupt function for the corresponding pushbuttons 
@@ -605,7 +698,18 @@ enable_PB_INT_ASM:
 disable_PB_INT_ASM:
 	PUSH {LR}
 	LDR A2, =PB_IM_ADDR // Load interruptmask register address into A2
-	MOV A3, #0x0000000f // Move string of 1-bits into A3
-	EOR A1, A1, A3 // Bitwise XOR to get complementary of input -> c XOR 1 = c'
-	STR A1, [A2] // Store value
+	STR A1, [A2] // Write indices of interrupted buttons into memory
+	POP {PC} 
+
+
+
+// === LEDs - DRIVERS ===
+
+// LEDs Driver
+// writes the state of LEDs (On/Off) in A1 to the LEDs' control register
+// pre-- A1: data to write to LED state
+write_LEDs_ASM:
+    PUSH {LR}
+	LDR A2, =LED_ADDR    // load the address of the LEDs' state
+	STR A1, [A2]         // update LED state with the contents of A1
 	POP {PC}
