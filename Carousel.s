@@ -81,7 +81,7 @@ SERVICE_FIQ:
 .equ PB_IM_ADDR, 0xFF200058 // Pushbuttons' interruptmask register
 .equ PB_CER_ADDR, 0xFF20005C // Pushbuttons' captureedge register
 .equ TIMER_ADDR, 0xFFFEC600 // Private timer
-.equ CONST_10MIL, 0x989680 // 10,000,000 constant to use as load value in private timer TODO - change this back to 50M
+.equ CONST_10MIL, 0x989680 // 10,000,000 constant to use as load value in private timer
 
 LETTER_MAP: .byte 0x77, 0x7C, 0x39, 0x5E, 0x79, 0x71, 0x3D, 0x76, 0x30, 0x1E // Holds 7 segment decoded values for A through J
             .space 2
@@ -89,7 +89,7 @@ NUM_MAP: .byte 0x03F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x67 // Ho
          .space 2
 CURR_ROTATION: .byte 0x03F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x67 // Holds 7 segment decoded values of current rotation in display -> At start time, same as number map, but will change over time as we write different values to it...
                .space 2
-CURR_DIR: .word 0x0 // Store direction bit in memory -> 0 = shift left, 1 = shift right
+CURR_DIR: .word 0x1 // Store direction bit in memory -> 0 = shift left, 1 = shift right
 CURR_PRESCALE: .word 0x2FAF080 // Prescaler bits of the timer... initially set to 50 million
 
 // By default, a pre-programmed sequence or message at least 10 characters long flows left to right, shifting one position 
@@ -180,7 +180,32 @@ _start:
     MSR CPSR_c, R0
 
 IDLE:
-    B IDLE
+    BL read_slider_switches_ASM // Get state of switches in A1
+    MOV A2, #0 // Index of which button we are at
+
+check_switches:
+    CMP A2, #10 // Check if we have covered all the 10 buttons
+    BEQ IDLE // If so, then go back to IDLE state
+    AND A3, A1, #1 // Move LSB into A3
+    ASR A1, #1 // Shift button indices down by 1
+    // UPDATE CURRENT ROTATION
+    LDR A4, =CURR_ROTATION // Load base address of current rotation of elements into A4
+    LDRB V1, [A4, A2] // Fetch elemnt at index i of current rotation
+    AND V2, V1, #0x80 // Get bit 16 from the loaded elemnt -> 0 = number, 1 = letter
+    ASR V2, #7 // Shift bit down 15 positions into LSB position
+    CMP V2, A3 // Check if the bit is same as switch bit
+    ADDEQ A2, A2, #1 // Increment index (setup for next iteration in case no work needs to be done)
+    BEQ check_switches // If they are equal, then no work needs to be done, go to next iteration
+    CMP A3, #0 // Otherwise, check if switch is pressed (1) or not (0)
+    LDREQ V3, =NUM_MAP // Load number map address if 0
+    LDRNE V3, =LETTER_MAP // Otherwise, load letter map if 1
+    LDRB V4, [V3, A2] // Load element at index i from number map
+    LSL A3, #7 // Move LSB up to bit 16
+    ORR V4, V4, A3 // Append bit 16 to the rest of the 7-segment decoded value
+    STRB V4, [A4, A2] // Store the fetched element into current rotation map
+    ADD A2, A2, #1 // Increment index
+    B check_switches
+    
 
 CONFIG_GIC:
     PUSH {LR}
@@ -295,15 +320,36 @@ TIMER_ISR:
     POP {PC}
 
 pause: // PB3
-    PUSH {LR}
+    PUSH {A1, LR}
     LDR A3, =TIMER_ADDR // Load base address of timer into A3
     LDR A2, [A3, #8] // Load content of prescaler bits and config bits into A2
     EOR A2, A2, #0x00000001 // Flip enable bit E (LSB)
     STR A2, [A3, #8] // Store new config bits
 
     // CHANGE LEDS...
+    AND A3, A2, #0x1 // Keep only E bit i.e. LSB
+    CMP A3, #0 // Check if we are paused right now
+    MOVEQ A1, #0x0 // If E = 0, then we want to shut off all LEDs
+    BEQ pause_end // Exit body
+    ASR A3, A2, #8 // Shift down prescaler bits and store into A3
+    AND A3, A3, #0xff // Keep only 8 LSBs i.e. prescaler bits
+    CMP A3, #1 // Check if prescale = 1
+    MOVEQ A2, #0x3 // Upper bits
+    LSLEQ A2, #8 // Shift up 8
+    MOVEQ A1, #0xff // Lower bits
+    ADDEQ A1, A1, A2 // Light up 10 LEDs
+    CMP A3, #2 // Check if prescale = 2
+    MOVEQ A1, #0xff // Light up 8 LEDs
+    CMP A3, #4 // Check if prescale = 4
+    MOVEQ A1, #0x3f // Light up 6 LEDs
+    CMP A3, #8 // Check if prescale = 8
+    MOVEQ A1, #0xf // Light up 4 LEDs
+    CMP A3, #19 // Check if prescale = 19
+    MOVEQ A1, #0x3 // Light up 2 LEDs 
 
-    POP {PC}
+    pause_end:
+        BL write_LEDs_ASM // Write value in A1 to LED memory
+        POP {A1, PC}
 
 change_direction: // PB2
     PUSH {LR}
@@ -314,33 +360,37 @@ change_direction: // PB2
     POP {PC}
 
 speed_up: // PB1
-    PUSH {V1, LR}
+    PUSH {A1, V1-V2, LR}
     LDR A1, =TIMER_ADDR // Move timer address into A1
     LDR A2, [A1, #8] // Load contents of prescaler and config bits into A2
     AND A2, A2, #0x0000ff00 // Keep only prescaler bits
     ASR A2, #8 // Shift prescaler bits all the way down
 
     // Update speed
-    CMP A2, #16 // Check if prescale = 16
+    CMP A2, #19 // Check if prescale = 19
     MOVEQ A2, #8 // If so, new prescale = 8
-    BEQ speed_up_end // And exit function
+    BEQ speed_up_update_leds // And exit function
     CMP A2, #8 // Check if prescale = 8
     MOVEQ A2, #4 // If so, new prescale = 4
-    BEQ speed_up_end // And exit function
+    BEQ speed_up_update_leds // And exit function
     CMP A2, #4 // Check if prescale = 4
     MOVEQ A2, #2 // If so, new prescale = 2
-    BEQ speed_up_end // And exit function
+    BEQ speed_up_update_leds // And exit function
     CMP A2, #2 // Check if prescale = 2
     MOVEQ A2, #1 // If so, new prescale = 1
     // Ignore case prescale = 1 since 1 is fastest... no need to modify anything
 
-    speed_up_end: // Update LEDs
+    speed_up_update_leds: // Update LEDs
         MOV V1, A2 // Move new prescale value into V1
         LSL A2, #8 // Shift up prescaler bits to right position
         LDR A3, [A1, #8] // Load contents of prescaler and config bits into A3
-        AND A3, A3, #0xf // Keep only config bits
+        AND V2, A3, #0x1 // Keep only E bit in V2
+        AND A3, A3, #0xf // Keep only config bits in A3
         ORR A2, A2, A3 // Bitwise OR between A2 and A3 to concatenate prescaler and config bits
         STR A2, [A1, #8] // Write new prescaler bits to memory
+        CMP V2, #0 // Check if E = 0
+        MOVEQ A1, #0 // Shut off all LEDs
+        BEQ speed_up_end // Branch to end
         CMP V1, #1 // Check if prescale = 1 -> MAX SPEED
         MOVEQ A2, #0x3 // Upper bits
         LSLEQ A2, #8 // Shift up 8
@@ -352,13 +402,15 @@ speed_up: // PB1
         MOVEQ A1, #0x3f // Light up 6 LEDs
         CMP V1, #8 // Check if prescale = 8
         MOVEQ A1, #0xf // Light up 4 LEDs
-        CMP V1, #16 // Check if prescale = 16
-        MOVEQ A1, #0x3 // Light up 2 LEDs 
+        CMP V1, #19 // Check if prescale = 19
+        MOVEQ A1, #0x3 // Light up 2 LEDs
+
+    speed_up_end: 
         BL write_LEDs_ASM // Update LEDs
-        POP {V1, PC}
-        
+        POP {A1, V1-V2, PC}
+
 slow_down: // PB0
-    PUSH {V1, LR}
+    PUSH {A1, V1-V2, LR}
     LDR A1, =TIMER_ADDR // Move timer address into A1
     LDR A2, [A1, #8] // Load contents of prescaler and config bits into A2
     AND A2, A2, #0x0000ff00 // Keep only prescaler bits
@@ -367,24 +419,28 @@ slow_down: // PB0
     // Update speed
     CMP A2, #1 // Check if prescale = 1
     MOVEQ A2, #2 // If so, new prescale = 2
-    BEQ slow_down_end // And exit function
+    BEQ slow_down_update_leds // And exit function
     CMP A2, #2 // Check if prescale = 2
     MOVEQ A2, #4 // If so, new prescale = 4
-    BEQ slow_down_end // And exit function
+    BEQ slow_down_update_leds // And exit function
     CMP A2, #4 // Check if prescale = 4
     MOVEQ A2, #8 // If so, new prescale = 8
-    BEQ slow_down_end // And exit function
+    BEQ slow_down_update_leds // And exit function
     CMP A2, #8 // Check if prescale = 8
-    MOVEQ A2, #16 // If so, new prescale = 16
-    // Ignore case prescale = 16 since 16 is slowest... no need to modify anything
+    MOVEQ A2, #19 // If so, new prescale = 19
+    // Ignore case prescale = 19 since 19 is slowest... no need to modify anything
 
-    slow_down_end: // Update LEDs
+    slow_down_update_leds: // Update LEDs
         MOV V1, A2 // Move new prescale value into V1
         LSL A2, #8 // Shift up prescaler bits to right position
         LDR A3, [A1, #8] // Load contents of prescaler and config bits into A3
+        AND V2, A3, #0x1 // Keep only E bit in V2
         AND A3, A3, #0xf // Keep only config bits
         ORR A2, A2, A3 // Bitwise OR between A2 and A3 to concatenate prescaler and config bits
         STR A2, [A1, #8] // Write new prescaler bits to memory
+        CMP V2, #0 // Check if E = 0
+        MOVEQ A1, #0 // Shut off all LEDs
+        BEQ slow_down_end // Branch to end
         CMP V1, #1 // Check if prescale = 1 -> MAX SPEED
         MOVEQ A2, #0x3 // Upper bits
         LSLEQ A2, #8 // Shift up 8
@@ -396,15 +452,18 @@ slow_down: // PB0
         MOVEQ A1, #0x3f // Light up 6 LEDs
         CMP V1, #8 // Check if prescale = 8
         MOVEQ A1, #0xf // Light up 4 LEDs
-        CMP V1, #16 // Check if prescale = 16
+        CMP V1, #19 // Check if prescale = 19
         MOVEQ A1, #0x3 // Light up 2 LEDs 
+        
+    slow_down_end:
         BL write_LEDs_ASM // Update LEDs
-        POP {V1, PC}
+        POP {A1, V1-V2, PC}
 
 shift_left:
-	PUSH {V1-V3, LR}
+	PUSH {V1-V4, LR}
     MOV A1, #0x20 // We want to read HEX5
     BL HEX_read_ASM // Load contents of HEX5 into A1
+    AND A1, A1, #0x7f // Ignore bit 8
     MOV A2, #0 // Instantiate index to 0 -> We want to find index corresponding to contents in A1
     LDR V3, =LETTER_MAP // Load letter map base address into V3
     LDR V4, =NUM_MAP // Load num map base address into V4
@@ -453,12 +512,13 @@ shift_left:
         B shift_left_loop // Branch back to loop
 
     shift_left_end:
-        POP {V1-V3, PC}
+        POP {V1-V4, PC}
 
 shift_right:
-    PUSH {V1-V3, LR}
+    PUSH {V1-V4, LR}
     MOV A1, #0x01 // We want to read HEX0
     BL HEX_read_ASM // Load contents of HEX0 into A1
+    AND A1, A1, #0x7f // Ignore bit 8
     MOV A2, #0 // Instantiate index to 0 -> We want to find index corresponding to contents in A1
     LDR V3, =LETTER_MAP // Load letter map base address into V3
     LDR V4, =NUM_MAP // Load num map base address into V4
@@ -506,7 +566,7 @@ shift_right:
         B shift_right_loop // Branch back to loop
 
     shift_right_end:
-        POP {V1-V3, PC}
+        POP {V1-V4, PC}
 
 
 // This subroutine accounts for the special case when index = 10 when shifting left
