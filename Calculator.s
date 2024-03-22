@@ -211,50 +211,42 @@ hex_to_bcd:
 	MOV A2, A4 // Move result r into A2
 	CMP A2, #0 // Check if A2 is negative
 	RSBLT A2, A2, #0 // If the number is negative, negate
-	// MVN A2, A2
-	// ADD A2, A2, #1
+	LSL A2, #15 // Shift number up into MSB position
 	MOV A3, #0x80000000 // Initialize A3 with the MSB mask
 	MOV V2, #0 // Index
 
-hex_to_bcd_loop:
-	LSL A1, #1 // Shift BCD result up
-	AND V1, A2, A3 // Temporarily store MSB of hex value in V1
-	LSR V1, #31 // Shift MSB into LSB position
-	ORR A1, A1, V1 // Bitwise OR between BCD result in A1 and temp LSB in V1
-	LSL A2, #1 // Shift A2 to the left by 1 -> Next cycle will take MSB again
-	CMP V2, #31 // Once we reach 33rd iteration, break since register only hold 32 bits
-	BEQ hex_to_bcd_end
-	
-	AND V1, A1, #0x000f0000 // Get bits 16-19
-	ASR V1, #16 // Shift down by 16
-	CMP V1, #5 // Check if greater than 5
-	ADDGE A1, A1, #0x00030000 // Add 3 if so
-	
-	AND V1, A1, #0x0000f000 // Get bits 12-15
-	ASR V1, #12 // Shift down by 12
-	CMP V1, #5 // Check if greater than 5
-	ADDGE A1, A1, #0x00003000 // Add 3 if so
-	
-	AND V1, A1, #0x00000f00 // Get bits 8-11
-	ASR V1, #8 // Shift down by 8
-	CMP V1, #5 // Check if greater than 5
-	ADDGE A1, A1, #0x00000300 // Add 3 if so
-	
-	AND V1, A1, #0x000000f0 // Get bits 4-7
-	ASR V1, #4 // Shift down by 4
-	CMP V1, #5 // check if value in V1 is greater than 5
-	ADDGE A1, A1, #0x00000030 // Add 3 if so
-	
-	AND V1, A1, #0x0000000f // Get bits 0-3
-	CMP V1, #5 // Check if value in V1 is greater than 5
-	ADDGE A1, A1, #0x00000003 // Add 3 if so -> dabble in double dabble
-	
-	ADD V2, V2, #1 // Increment index
-	B hex_to_bcd_loop
+	hex_to_bcd_loop:
+		LSL A1, #1 // Shift BCD result up
+		AND V1, A2, A3 // Temporarily store MSB of hex value in V1
+		LSR V1, #31 // Shift MSB into LSB position
+		ORR A1, A1, V1 // Bitwise OR between BCD result in A1 and temp LSB in V1
+		LSL A2, #1 // Shift A2 to the left by 1 -> Next cycle will take MSB again
+		CMP V2, #16 // Once we reach 16th iteration, break since register only hold 32 bits
+		BEQ hex_to_bcd_end
+		AND V1, A1, #0x000f0000 // Get bits 16-19
+		ASR V1, #16 // Shift down by 16
+		CMP V1, #5 // Check if greater than 5
+		ADDGE A1, A1, #0x00030000 // Add 3 if so
+		AND V1, A1, #0x0000f000 // Get bits 12-15
+		ASR V1, #12 // Shift down by 12
+		CMP V1, #5                // Check if greater than 5
+		ADDGE A1, A1, #0x00003000 // Add 3 if so
+		AND V1, A1, #0x00000f00   // Get bits 8-11
+		ASR V1, #8                // Shift down by 8
+		CMP V1, #5                // Check if greater than 5
+		ADDGE A1, A1, #0x00000300 // Add 3 if so
+		AND V1, A1, #0x000000f0   // Get bits 4-7
+		ASR V1, #4                // Shift down by 4
+		CMP V1, #5                // Check if value in V1 is greater than 5
+		ADDGE A1, A1, #0x00000030 // Add 3 if so
+		AND V1, A1, #0x0000000f   // Get bits 0-3
+		CMP V1, #5                // Check if value in V1 is greater than 5
+		ADDGE A1, A1, #0x00000003 // Add 3 if so -> dabble in double dabble
+		ADD V2, V2, #1 // Increment index
+		B hex_to_bcd_loop
 
-hex_to_bcd_end:
-	POP {V1-V2, LR}
-	BX LR
+	hex_to_bcd_end:
+		POP {V1-V2, PC}
 
 HEX_display_neg:
 	PUSH {A1, LR}
@@ -263,8 +255,7 @@ HEX_display_neg:
 	MOVLT A2, #0x40 // 7-segment value for dash if r is negative
 	MOVGE A2, #0x0 // Otherwise, we write nothing to clear it
 	BL HEX_write_ASM // Write dash to the left-most HEX display
-	POP {A1, LR}
-	BX LR
+	POP {A1, PC}
 
 
 
@@ -279,8 +270,7 @@ read_slider_switches_ASM:
 	PUSH {LR}
 	LDR A2, =SW_ADDR     // load the address of slider switch state
 	LDR A1, [A2]         // read slider switch state 
-	POP {LR}
-	BX LR
+	POP {PC}
 	
 // LEDs Driver
 // writes the state of LEDs (On/Off) in A1 to the LEDs' control register
@@ -289,8 +279,7 @@ write_LEDs_ASM:
 	PUSH {LR}
 	LDR A2, =LED_ADDR    // load the address of the LEDs' state
 	STR A1, [A2]         // update LED state with the contents of A1
-	POP {LR}
-	BX LR
+	POP {PC}
 
 
 // === HEX DISPLAYS - DRIVERS ===
@@ -300,10 +289,9 @@ write_LEDs_ASM:
 // through register A1 as an argument.
 HEX_clear_ASM:
 	PUSH {LR}
-	MOV A2, #0x0 // Value to display is 0 for no segments on
+	MOV A2, #0x0     // Value to display is 0 for no segments on
 	BL HEX_write_ASM // Call subroutine
-	POP {LR}
-	BX LR
+	POP {PC}
 	
 // This subroutine turns on all the segments of the selected 
 // HEX displays. It receives the selected HEX display indices 
@@ -312,8 +300,7 @@ HEX_flood_ASM:
 	PUSH {LR}
 	MOV A2, #0x7f // Value to display is 0x7f
 	BL HEX_write_ASM // Call subroutine
-	POP {LR}
-	BX LR 
+	POP {PC}
 
 // Input -> A1, A2
 // A1: HEX display indices (0x0 - 0x1f)
@@ -340,8 +327,7 @@ writeLoop2:
 	B writeLoop1 // Branch back to next iteration of loop
 	
 writeEnd:
-	POP {V1-V2, LR}
-	BX LR
+	POP {V1-V2, PC}
 
 
 // === PUSH BUTTONS - DRIVERS ===
@@ -358,8 +344,7 @@ read_PB_data_ASM:
 	LDR A1, =PB_ADDR // Load base address
 	LDR A2, [A1] // Load contents of push buttons into A2
 	MOV A1, A2 // Move value into A1 to return
-	POP {LR}
-	BX LR
+	POP {PC}
 
 // This subroutine receives a pushbutton index as an argument in A1. 
 // Then, it returns 0x00000001 if the corresponding pushbutton is pressed.
@@ -371,8 +356,7 @@ PB_data_is_pressed_ASM:
 	CMP V1, #0 // Compare result to 0
 	MOVGT A1, #1 // Return 1
 	MOVLE A1, #0 // Return 0
-	POP {V1, LR}
-	BX LR
+	POP {V1, PC}
 	
 // This subroutine returns the indices of the pushbuttons that have 
 // been pressed and then released (the edge bits from the pushbuttons’ 
@@ -382,8 +366,7 @@ read_PB_edgecp_ASM:
 	LDR A1, =PB_CER_ADDR // Load base address of captureedge register
 	LDR A2, [A1] // Load contents into A2
 	MOV A1, A2 // Move result into A1 to return
-	POP {LR}
-	BX LR
+	POP {PC}
 
 // This subroutine receives a pushbutton index as an argument in A1. 
 // Then, it returns 0x00000001 if the corresponding pushbutton 
@@ -396,8 +379,7 @@ PB_edgecp_is_pressed_ASM:
 	CMP V1, #0 // Compare result of AND to 0
 	MOVGT A1, #1 // Return 1
 	MOVLE A1, #0 // Return 0
-	POP {V1, LR}
-	BX LR
+	POP {V1, PC}
 	
 // This subroutine clears the pushbutton Edgecapture register. You can 
 // read the edgecapture register and write what you just read back to 
@@ -408,8 +390,7 @@ PB_clear_edgecp_ASM:
 	LDR A1, =PB_CER_ADDR // Move base address of captureedge register into A2
 	LDR A2, [A1] // Load contents into A2
 	STR A2, [A1] // Write read content back into captureedge register
-	POP {LR}
-	BX LR
+	POP {PC}
 
 // This subroutine receives pushbutton indices as an argument in A1. Then, 
 // it enables the interrupt function for the corresponding pushbuttons 
@@ -418,8 +399,7 @@ enable_PB_INT_ASM:
 	PUSH {LR}
 	LDR A2, =PB_IM_ADDR // Load interruptmask register address into A2
 	STR A1, [A2] // Write indices of interrupted buttons into memory
-	POP {LR}
-	BX LR
+	POP {PC}
 
 // This subroutine receives pushbutton indices as an argument in A1. Then, 
 // it disables the interrupt function for the corresponding pushbuttons 
@@ -430,5 +410,4 @@ disable_PB_INT_ASM:
 	MOV A3, #0x0000000f // Move string of 1-bits into A3
 	EOR A1, A1, A3 // Bitwise XOR to get complementary of input -> c XOR 1 = c'
 	STR A1, [A2] // Store value
-	POP {LR}
-	BX LR
+	POP {PC}
